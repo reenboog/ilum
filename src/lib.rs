@@ -10,6 +10,9 @@ pub const MKEM_CTDBYTES: usize = 48;
 extern {
 	pub fn mkem_group(seed: *mut u8);
 	pub fn mkem_keypair(pk: *mut u8, sk: *mut u8, seed: *const u8);
+	
+	pub fn mkem_enc(ctds: *mut *mut u8, cti: *mut u8, ss: *mut u8, seed: *const u8, pks: *const *const u8, nkps: usize);
+	pub fn mkem_dec(ss: *mut u8, cti: *const u8, ctd: *const u8, group: *const u8, pk: *const u8, sk: *const u8);
 }
 
 #[cfg(test)]
@@ -50,5 +53,38 @@ mod tests {
 			assert_ne!(sk1, vec![0; MKEM_SECRETKEYBYTES]);
 			assert_ne!(sk0, sk1);
 		});
+	}
+
+	#[test]
+	fn test_encrypt_decrypt() {
+		let mut seed = vec![0; MKEM_GROUPBYTES];
+
+		unsafe { mkem_group(seed.as_mut_ptr()); }
+
+		let keys: Vec<(Vec<u8>, Vec<u8>)> = (0..5).map(|_| {
+			let mut pk = vec![0; MKEM_PUBLICKEYBYTES];
+			let mut sk = vec![0; MKEM_SECRETKEYBYTES];
+
+			unsafe { mkem_keypair(pk.as_mut_ptr(), sk.as_mut_ptr(), seed.as_ptr()) };
+
+			(pk, sk)
+		}).collect();
+
+		let pks: Vec<*const u8> = keys.iter().map(|kp| kp.0.as_ptr()).collect();
+		let ctds = vec![vec![0u8; MKEM_CTDBYTES]; keys.len()];
+		let mut cti = vec![0u8; MKEM_CTIBYTES];
+		let mut ss_ref = vec![0u8; MKEM_SSBYTES];
+
+		let mut ctds_ptrs: Vec<*mut u8> = ctds.iter().map(|c| c.as_ptr() as *mut u8).collect();
+		
+		unsafe { mkem_enc(ctds_ptrs.as_mut_ptr(), cti.as_mut_ptr(), ss_ref.as_mut_ptr(), seed.as_mut_ptr(), pks.as_ptr(), pks.len()) };
+
+		keys.iter().enumerate().for_each(|(idx, kp)| {
+			let mut ss = vec![0u8; MKEM_SSBYTES];
+
+			unsafe { mkem_dec(ss.as_mut_ptr(), cti.as_ptr(), ctds[idx].as_ptr(), seed.as_ptr(), kp.0.as_ptr(), kp.1.as_ptr()) };
+
+			assert_eq!(ss, ss_ref);
+		})
 	}
 }
