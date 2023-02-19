@@ -61,7 +61,7 @@ mod tests {
 
 		unsafe { mkem_group(seed.as_mut_ptr()); }
 
-		let keys: Vec<(Vec<u8>, Vec<u8>)> = (0..5).map(|_| {
+		let keys: Vec<(Vec<u8>, Vec<u8>)> = (0..10).map(|_| {
 			let mut pk = vec![0; MKEM_PUBLICKEYBYTES];
 			let mut sk = vec![0; MKEM_SECRETKEYBYTES];
 
@@ -73,18 +73,60 @@ mod tests {
 		let pks: Vec<*const u8> = keys.iter().map(|kp| kp.0.as_ptr()).collect();
 		let ctds = vec![vec![0u8; MKEM_CTDBYTES]; keys.len()];
 		let mut cti = vec![0u8; MKEM_CTIBYTES];
-		let mut ss_ref = vec![0u8; MKEM_SSBYTES];
-
+		let mut ref_ss = vec![0u8; MKEM_SSBYTES];
 		let mut ctds_ptrs: Vec<*mut u8> = ctds.iter().map(|c| c.as_ptr() as *mut u8).collect();
 		
-		unsafe { mkem_enc(ctds_ptrs.as_mut_ptr(), cti.as_mut_ptr(), ss_ref.as_mut_ptr(), seed.as_mut_ptr(), pks.as_ptr(), pks.len()) };
+		unsafe { mkem_enc(ctds_ptrs.as_mut_ptr(), cti.as_mut_ptr(), ref_ss.as_mut_ptr(), seed.as_mut_ptr(), pks.as_ptr(), pks.len()) };
 
 		keys.iter().enumerate().for_each(|(idx, kp)| {
 			let mut ss = vec![0u8; MKEM_SSBYTES];
 
 			unsafe { mkem_dec(ss.as_mut_ptr(), cti.as_ptr(), ctds[idx].as_ptr(), seed.as_ptr(), kp.0.as_ptr(), kp.1.as_ptr()) };
+			assert_eq!(ss, ref_ss);
+		})
+	}
 
-			assert_eq!(ss, ss_ref);
+	#[test]
+	fn test_seed_mismatch() {
+		let mut ref_seed = vec![0; MKEM_GROUPBYTES];
+
+		unsafe { mkem_group(ref_seed.as_mut_ptr()); }
+
+		let keys: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..10).map(|_| {
+			// each of these keys has its unique seed, so there's no way to bind them
+			let mut seed = vec![0; MKEM_GROUPBYTES];
+
+			unsafe { mkem_group(seed.as_mut_ptr()); }
+
+			assert_ne!(seed, ref_seed);
+
+			let mut pk = vec![0; MKEM_PUBLICKEYBYTES];
+			let mut sk = vec![0; MKEM_SECRETKEYBYTES];
+
+			unsafe { mkem_keypair(pk.as_mut_ptr(), sk.as_mut_ptr(), seed.as_ptr()) };
+
+			(pk, sk, seed)
+		}).collect();
+
+		let pks: Vec<*const u8> = keys.iter().map(|kp| kp.0.as_ptr()).collect();
+		let ctds = vec![vec![0u8; MKEM_CTDBYTES]; keys.len()];
+		let mut cti = vec![0u8; MKEM_CTIBYTES];
+		let mut ref_ss = vec![0u8; MKEM_SSBYTES];
+		let mut ctds_ptrs: Vec<*mut u8> = ctds.iter().map(|c| c.as_ptr() as *mut u8).collect();
+		
+		// mkem_enc does return a "shared" secret
+		unsafe { mkem_enc(ctds_ptrs.as_mut_ptr(), cti.as_mut_ptr(), ref_ss.as_mut_ptr(), ref_seed.as_mut_ptr(), pks.as_ptr(), pks.len()) };
+
+		keys.iter().enumerate().for_each(|(idx, kp)| {
+			let mut ss = vec![0u8; MKEM_SSBYTES];
+
+			// but it does not decrypt the shared secret because of seed mismatch
+			unsafe { mkem_dec(ss.as_mut_ptr(), cti.as_ptr(), ctds[idx].as_ptr(), kp.2.as_ptr(), kp.0.as_ptr(), kp.1.as_ptr()) };
+			assert_ne!(ss, ref_ss);
+
+			// even if the same ref seed from mkem_enc is used (each key has its own seed, hence no bond)
+			unsafe { mkem_dec(ss.as_mut_ptr(), cti.as_ptr(), ctds[idx].as_ptr(), ref_seed.as_ptr(), kp.0.as_ptr(), kp.1.as_ptr()) };
+			assert_ne!(ss, ref_ss);
 		})
 	}
 }
