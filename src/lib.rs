@@ -1,132 +1,74 @@
-// copied from mkem.h
-// DO NOT MODIFY
-pub const MKEM_GROUPBYTES: usize = 16;
-pub const MKEM_SECRETKEYBYTES: usize = (2 * 384) + 16;
-pub const MKEM_PUBLICKEYBYTES: usize = 2 * 384;
-pub const MKEM_SSBYTES: usize = 16;
-pub const MKEM_CTIBYTES: usize = 2 * 352;
-pub const MKEM_CTDBYTES: usize = 48;
+mod ffi;
 
-extern {
-	pub fn mkem_group(seed: *mut u8);
-	pub fn mkem_keypair(pk: *mut u8, sk: *mut u8, seed: *const u8);
-	
-	pub fn mkem_enc(ctds: *mut *mut u8, cti: *mut u8, ss: *mut u8, seed: *const u8, pks: *const *const u8, nkps: usize);
-	pub fn mkem_dec(ss: *mut u8, cti: *const u8, ctd: *const u8, group: *const u8, pk: *const u8, sk: *const u8);
+use ffi::{MKEM_GROUPBYTES, MKEM_PUBLICKEYBYTES, mkem_group, MKEM_SECRETKEYBYTES, mkem_keypair, MKEM_CTIBYTES, MKEM_CTDBYTES, MKEM_SSBYTES, mkem_enc, mkem_dec};
+
+pub type Seed = [u8; MKEM_GROUPBYTES];
+
+pub fn gen_seed() -> Seed {
+	let mut seed = [0; MKEM_GROUPBYTES];
+
+	unsafe { mkem_group(seed.as_mut_ptr()); }
+
+	seed
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
+pub type PublicKey = [u8; MKEM_PUBLICKEYBYTES];
+pub type SecretKey = [u8; MKEM_SECRETKEYBYTES];
+pub struct KeyPair {
+	pub pk: PublicKey,
+	pub sk: SecretKey
+}
 
-	#[test]
-	fn test_gen_non_zeroes_and_unique() {
-		(0..10).for_each(|_| {
-			let mut s0 = vec![0; MKEM_GROUPBYTES];
+pub fn gen_keypair(seed: &Seed) -> KeyPair {
+	let mut pk = [0; MKEM_PUBLICKEYBYTES];
+	let mut sk = [0; MKEM_SECRETKEYBYTES];
 
-			unsafe { mkem_group(s0.as_mut_ptr()); }
+	unsafe { mkem_keypair(pk.as_mut_ptr(), sk.as_mut_ptr(), seed.as_ptr()) };
 
-			assert_ne!(s0, vec![0; MKEM_GROUPBYTES]);
+	KeyPair { pk, sk }
+}
 
-			let mut s1 = vec![0; MKEM_GROUPBYTES];
+pub type Cti = [u8; MKEM_CTIBYTES];
+pub type Ctd = [u8; MKEM_CTDBYTES];
+pub type SharedSecret = [u8; MKEM_SSBYTES];
 
-			unsafe { mkem_group(s1.as_mut_ptr()); }
+pub struct Encapsulation {
+	// key-independent (shared) ciphertext
+	pub cti: Cti,
+	// key-dependent ciphertext
+	pub ctds: Vec<Ctd>,
+	// shared secret
+	pub ss: SharedSecret
+}
 
-			assert_ne!(s1, vec![0; MKEM_GROUPBYTES]);
-			assert_ne!(s0, s1);
+// does not check whether the supplied keys are of the same seed
+pub fn enc(seed: &Seed, keys: &[PublicKey]) -> Encapsulation {
+	let pks: Vec<*const u8> = keys.iter().map(|k| k.as_ptr()).collect();
+	let ctds = vec![[0u8; MKEM_CTDBYTES]; keys.len()];
+	let mut cti = [0u8; MKEM_CTIBYTES];
+	let mut ss = [0u8; MKEM_SSBYTES];
+	let mut ctds_ptrs: Vec<*mut u8> = ctds.iter().map(|c| c.as_ptr() as *mut u8).collect();
+	
+	unsafe { mkem_enc(ctds_ptrs.as_mut_ptr(), cti.as_mut_ptr(), ss.as_mut_ptr(), seed.as_ptr(), pks.as_ptr(), pks.len()) };
 
-			let mut pk0 = vec![0; MKEM_PUBLICKEYBYTES];
-			let mut sk0 = vec![0; MKEM_SECRETKEYBYTES];
-
-			unsafe { mkem_keypair(pk0.as_mut_ptr(), sk0.as_mut_ptr(), s0.as_ptr()) };
-
-			assert_ne!(pk0, vec![0; MKEM_PUBLICKEYBYTES]);
-			assert_ne!(sk0, vec![0; MKEM_SECRETKEYBYTES]);
-
-			let mut pk1 = vec![0; MKEM_PUBLICKEYBYTES];
-			let mut sk1 = vec![0; MKEM_SECRETKEYBYTES];
-
-			unsafe { mkem_keypair(pk1.as_mut_ptr(), sk1.as_mut_ptr(), s1.as_ptr()) };
-
-			assert_ne!(pk1, vec![0; MKEM_PUBLICKEYBYTES]);
-			assert_ne!(pk0, pk1);
-			assert_ne!(sk1, vec![0; MKEM_SECRETKEYBYTES]);
-			assert_ne!(sk0, sk1);
-		});
+	Encapsulation {
+		cti,
+		ctds,
+		ss
 	}
+}
 
-	#[test]
-	fn test_encrypt_decrypt() {
-		let mut seed = vec![0; MKEM_GROUPBYTES];
+// returns Some(SharedKey), if decapsulates or None otherwise
+pub fn dec(cti: &Cti, ctd: &Ctd, seed: &Seed, pk: &PublicKey, sk: &SecretKey) -> Option<SharedSecret> {
+	let empty_ss = [0u8; MKEM_SSBYTES];
+	let mut ss = empty_ss.clone();
 
-		unsafe { mkem_group(seed.as_mut_ptr()); }
+	unsafe { mkem_dec(ss.as_mut_ptr(), cti.as_ptr(), ctd.as_ptr(), seed.as_ptr(), pk.as_ptr(), sk.as_ptr()) };
 
-		let keys: Vec<(Vec<u8>, Vec<u8>)> = (0..10).map(|_| {
-			let mut pk = vec![0; MKEM_PUBLICKEYBYTES];
-			let mut sk = vec![0; MKEM_SECRETKEYBYTES];
-
-			unsafe { mkem_keypair(pk.as_mut_ptr(), sk.as_mut_ptr(), seed.as_ptr()) };
-
-			(pk, sk)
-		}).collect();
-
-		let pks: Vec<*const u8> = keys.iter().map(|kp| kp.0.as_ptr()).collect();
-		let ctds = vec![vec![0u8; MKEM_CTDBYTES]; keys.len()];
-		let mut cti = vec![0u8; MKEM_CTIBYTES];
-		let mut ref_ss = vec![0u8; MKEM_SSBYTES];
-		let mut ctds_ptrs: Vec<*mut u8> = ctds.iter().map(|c| c.as_ptr() as *mut u8).collect();
-		
-		unsafe { mkem_enc(ctds_ptrs.as_mut_ptr(), cti.as_mut_ptr(), ref_ss.as_mut_ptr(), seed.as_mut_ptr(), pks.as_ptr(), pks.len()) };
-
-		keys.iter().enumerate().for_each(|(idx, kp)| {
-			let mut ss = vec![0u8; MKEM_SSBYTES];
-
-			unsafe { mkem_dec(ss.as_mut_ptr(), cti.as_ptr(), ctds[idx].as_ptr(), seed.as_ptr(), kp.0.as_ptr(), kp.1.as_ptr()) };
-			assert_eq!(ss, ref_ss);
-		})
-	}
-
-	#[test]
-	fn test_seed_mismatch() {
-		let mut ref_seed = vec![0; MKEM_GROUPBYTES];
-
-		unsafe { mkem_group(ref_seed.as_mut_ptr()); }
-
-		let keys: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = (0..10).map(|_| {
-			// each of these keys has its unique seed, so there's no way to bind them
-			let mut seed = vec![0; MKEM_GROUPBYTES];
-
-			unsafe { mkem_group(seed.as_mut_ptr()); }
-
-			assert_ne!(seed, ref_seed);
-
-			let mut pk = vec![0; MKEM_PUBLICKEYBYTES];
-			let mut sk = vec![0; MKEM_SECRETKEYBYTES];
-
-			unsafe { mkem_keypair(pk.as_mut_ptr(), sk.as_mut_ptr(), seed.as_ptr()) };
-
-			(pk, sk, seed)
-		}).collect();
-
-		let pks: Vec<*const u8> = keys.iter().map(|kp| kp.0.as_ptr()).collect();
-		let ctds = vec![vec![0u8; MKEM_CTDBYTES]; keys.len()];
-		let mut cti = vec![0u8; MKEM_CTIBYTES];
-		let mut ref_ss = vec![0u8; MKEM_SSBYTES];
-		let mut ctds_ptrs: Vec<*mut u8> = ctds.iter().map(|c| c.as_ptr() as *mut u8).collect();
-		
-		// mkem_enc does return a "shared" secret
-		unsafe { mkem_enc(ctds_ptrs.as_mut_ptr(), cti.as_mut_ptr(), ref_ss.as_mut_ptr(), ref_seed.as_mut_ptr(), pks.as_ptr(), pks.len()) };
-
-		keys.iter().enumerate().for_each(|(idx, kp)| {
-			let mut ss = vec![0u8; MKEM_SSBYTES];
-
-			// but it does not decrypt the shared secret because of seed mismatch
-			unsafe { mkem_dec(ss.as_mut_ptr(), cti.as_ptr(), ctds[idx].as_ptr(), kp.2.as_ptr(), kp.0.as_ptr(), kp.1.as_ptr()) };
-			assert_ne!(ss, ref_ss);
-
-			// even if the same ref seed from mkem_enc is used (each key has its own seed, hence no bond)
-			unsafe { mkem_dec(ss.as_mut_ptr(), cti.as_ptr(), ctds[idx].as_ptr(), ref_seed.as_ptr(), kp.0.as_ptr(), kp.1.as_ptr()) };
-			assert_ne!(ss, ref_ss);
-		})
+	if ss == empty_ss {
+		// if for any reason decapsulation fails, ss is not filled with data from mkem_dec
+		None
+	} else {
+		Some(ss)
 	}
 }
