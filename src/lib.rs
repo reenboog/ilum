@@ -72,3 +72,40 @@ pub fn dec(cti: &Cti, ctd: &Ctd, seed: &Seed, pk: &PublicKey, sk: &SecretKey) ->
 		Some(ss)
 	}
 }
+
+
+#[cfg(test)]
+mod tests {
+	use crate::{gen_seed, gen_keypair, enc, PublicKey, dec};
+
+	#[test]
+	fn test_gen_seed() {
+		let seed = gen_seed();
+
+		assert_ne!(seed.to_vec(), vec![0u8; seed.len()]);
+	}
+
+	#[test]
+	fn test_enc_dec() {
+		let seed = gen_seed();
+		let ref_keys = vec![gen_keypair(&seed), gen_keypair(&seed)];
+		let pks: Vec<PublicKey> = ref_keys.iter().map(|kp| kp.pk).collect();
+		let encapsulated = enc(&seed, &pks);
+
+		// it decapsulates with the right keys
+		ref_keys.iter().enumerate().for_each(|(idx, kp)| {
+			let ss = dec(&encapsulated.cti, &encapsulated.ctds[idx], &seed, &kp.pk, &kp.sk);
+
+			assert_eq!(ss.unwrap(), encapsulated.ss);
+		});
+
+		let wrong_keys = vec![gen_keypair(&seed), gen_keypair(&seed)];
+
+		// and fails with the wrong ones
+		wrong_keys.iter().enumerate().for_each(|(idx, kp)| {
+			let ss = dec(&encapsulated.cti, &encapsulated.ctds[idx], &seed, &kp.pk, &kp.sk);
+
+			assert!(ss.is_none());
+		});
+	}
+}
